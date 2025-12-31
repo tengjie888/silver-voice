@@ -1,9 +1,10 @@
 import streamlit as st
 import dashscope
-from dashscope.audio.asr import Transcription # 👈 使用最稳的文件转写接口
+from dashscope.audio.asr import Transcription
 from dashscope import Generation
 import os
 import json
+import time
 
 # =================配置区=================
 if "DASHSCOPE_API_KEY" in st.secrets:
@@ -45,7 +46,7 @@ if 'chat_history' not in st.session_state:
 audio_value = st.audio_input("点此开始录音")
 
 if audio_value:
-    st.info("正在上传并处理...")
+    st.info("正在听您说...")
     
     try:
         # 1. 保存临时文件
@@ -56,33 +57,39 @@ if audio_value:
         abs_path = os.path.abspath("temp_audio.wav")
         file_url = f"file://{abs_path}"
         
-        # 3. 提交任务 (Transcription 接口)
+        # 3. 提交任务
         task_response = Transcription.async_call(
             model='paraformer-v1',
             file_urls=[file_url],
             language_hints=['zh']
         )
         
-        # --- 🛡️防御性检查：防止报 'task_id' 错误 ---
         if task_response.status_code != 200:
-            st.error(f"连接阿里云失败: {task_response.code} - {task_response.message}")
-            st.error("请检查代码里的 API Key 是否填写正确！")
+            st.error(f"连接阿里云失败: {task_response.message}")
         else:
-            # 只有状态码是 200，才去取 task_id
             task_id = task_response.output.task_id
             
             # 4. 等待结果
             transcribe_response = Transcription.wait(task=task_id, api_key=API_KEY)
             
             if transcribe_response.status_code == 200:
-                # 提取文字
+                # --- 🔥 核心修复：超强鲁棒的文字提取逻辑 ---
                 user_text = ""
-                if 'results' in transcribe_response.output and transcribe_response.output['results']:
-                    for sent in transcribe_response.output['results'][0]['sentences']:
-                        user_text += sent['text']
+                results = transcribe_response.output.get('results', [])
                 
-                if user_text:
+                if results:
+                    first_result = results[0]
+                    # 优先找 sentences 列表
+                    if 'sentences' in first_result:
+                        user_text = "".join([s.get('text', '') for s in first_result['sentences']])
+                    # 如果没有 sentences，尝试直接找 text 字段
+                    elif 'text' in first_result:
+                        user_text = first_result['text']
+                
+                # 如果 user_text 还是空的，说明真的没听见
+                if user_text.strip():
                     st.success("听清啦！")
+                    
                     # 5. 调用大模型
                     system_prompt = "你是一个温暖的老年人陪伴助手，请简短、亲切地回复。"
                     if any(k in user_text for k in ["查", "问", "怎么", "哪里", "医生", "药"]):
@@ -106,7 +113,8 @@ if audio_value:
                 st.error(f"转写服务出错: {transcribe_response.message}")
                 
     except Exception as e:
-        st.error(f"程序内部错误: {e}")
+        # 把错误打印出来，方便看
+        st.error(f"程序内部错误: {str(e)}")
 
 # 显示历史
 st.markdown("---")
