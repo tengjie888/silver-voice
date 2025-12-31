@@ -1,6 +1,6 @@
 import streamlit as st
 import dashscope
-from dashscope.audio.asr import Recognition # 👈 换回短语音识别（便宜、快）
+from dashscope.audio.asr import Recognition # 使用短语音识别接口
 from dashscope import Generation
 import os
 
@@ -9,7 +9,7 @@ import os
 if "DASHSCOPE_API_KEY" in st.secrets:
     API_KEY = st.secrets["DASHSCOPE_API_KEY"]
 else:
-    API_KEY = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 
+    API_KEY = "sk-3132c4eed8694648a1bb55ae6cc25d25" 
 
 dashscope.api_key = API_KEY
 # =======================================
@@ -20,22 +20,18 @@ st.set_page_config(page_title="银龄知音", page_icon="👴", layout="centered
 st.markdown("""
     <style>
     #MainMenu, footer, header {visibility: hidden;}
-    
     div[role="radiogroup"] > label {
         background-color: #f0f2f6; padding: 10px 20px; border-radius: 20px;
         margin-right: 10px; border: 1px solid #ddd;
     }
     div[role="radiogroup"] { flex-direction: row; gap: 10px; }
-    
     .stAudioInput { margin-top: 20px; }
-    
     .chat-bubble {
         background: #ffffff; padding: 18px; border-radius: 18px; 
         margin-top: 15px; box-shadow: 0px 2px 8px rgba(0,0,0,0.08);
         font-size: 18px; line-height: 1.6; color: #333;
     }
     .user-bubble { color: #666; font-size: 16px; margin-top: 20px; }
-    
     .stApp { background-color: #F8F9FA; }
     h1 { color: #E74C3C; text-align: center; font-weight: 800; }
     </style>
@@ -67,13 +63,15 @@ if audio_value:
         st.info("正在听...")
         
         try:
-            # A. 先保存为本地文件 (解决 bytes 报错)
+            # A. 保存文件 (最稳妥的方式)
             temp_filename = "temp_audio.wav"
             with open(temp_filename, "wb") as f:
                 f.write(audio_value.getvalue())
             
+            # B. 使用 Paraformer 模型 (❌不要用 gummy，✅用 paraformer)
+            # paraformer-realtime-v1 既支持流式，也支持这种短文件识别，且兼容性好
             rec_response = Recognition.call(
-                model='gummy-realtime-v1',
+                model='paraformer-realtime-v1', 
                 file=temp_filename, 
                 format='wav',
                 language_hints=['zh']
@@ -82,7 +80,7 @@ if audio_value:
             # C. 检查结果
             if rec_response.status_code == 200:
                 user_text = ""
-                # 提取文字 (兼容两种返回格式)
+                # 兼容提取
                 if 'sentences' in rec_response.output:
                     user_text = "".join([s['text'] for s in rec_response.output['sentences']])
                 elif 'text' in rec_response.output:
@@ -91,7 +89,8 @@ if audio_value:
                 if user_text:
                     st.success("听清啦！")
                     
-                    # D. 大模型思考
+                    # D. 大模型思考 (这里可以实现翻译功能)
+                    # 如果您原本想用 gummy 做翻译，这里改 Prompt 就行了
                     if "聊聊" in mode:
                         system_prompt = "你是一个温暖的老年人陪伴助手“知音”。请用亲切、尊重的口吻，像晚辈一样陪老人聊天。回复要简短暖心，多给予情感支持。"
                     else:
@@ -102,7 +101,6 @@ if audio_value:
                         {'role': 'user', 'content': user_text}
                     ]
                     
-                    # 使用 qwen-turbo (便宜且够用)
                     llm_resp = Generation.call(
                         api_key=API_KEY, 
                         model="qwen-turbo", 
