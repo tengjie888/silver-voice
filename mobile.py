@@ -1,6 +1,8 @@
 import streamlit as st
-from dashscope import MultiModalConversation, Generation
-import os
+import dashscope
+from dashscope.audio.asr import Recognition
+from dashscope import Generation
+import json
 
 # =================配置区=================
 # ⚠️⚠️⚠️ 请务必在此处填入您的真实 API Key ⚠️⚠️⚠️
@@ -9,47 +11,27 @@ if "DASHSCOPE_API_KEY" in st.secrets:
 else:
     API_KEY = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 
 
+dashscope.api_key = API_KEY
 # =======================================
 
 st.set_page_config(page_title="银龄知音", page_icon="👴", layout="centered")
 
-# --- CSS 美化：让网页尽量像 App ---
+# --- CSS 样式 ---
 st.markdown("""
     <style>
-    /* 隐藏网页杂项 */
     #MainMenu, footer, header {visibility: hidden;}
-    
-    /* 模式选择器的样式优化 */
     div[role="radiogroup"] > label {
-        background-color: #f0f2f6;
-        padding: 10px 20px;
-        border-radius: 20px;
-        margin-right: 10px;
-        border: 1px solid #ddd;
+        background-color: #f0f2f6; padding: 10px 20px; border-radius: 20px;
+        margin-right: 10px; border: 1px solid #ddd;
     }
-    div[role="radiogroup"] {
-        flex-direction: row;
-        gap: 10px;
-    }
-    
-    /* 录音按钮样式微调 */
+    div[role="radiogroup"] { flex-direction: row; gap: 10px; }
     .stAudioInput { margin-top: 20px; }
-    
-    /* 聊天气泡 */
     .chat-bubble {
-        background: #ffffff; 
-        padding: 18px; 
-        border-radius: 18px; 
-        margin-top: 15px; 
-        box-shadow: 0px 2px 8px rgba(0,0,0,0.08);
-        font-size: 18px;
-        line-height: 1.6;
-        color: #333;
+        background: #ffffff; padding: 18px; border-radius: 18px; 
+        margin-top: 15px; box-shadow: 0px 2px 8px rgba(0,0,0,0.08);
+        font-size: 18px; line-height: 1.6; color: #333;
     }
-    .user-bubble {
-        color: #666; font-size: 16px; margin-top: 20px;
-    }
-    
+    .user-bubble { color: #666; font-size: 16px; margin-top: 20px; }
     .stApp { background-color: #F8F9FA; }
     h1 { color: #E74C3C; text-align: center; font-weight: 800; }
     </style>
@@ -57,7 +39,7 @@ st.markdown("""
 
 st.title("👵 银龄知音")
 
-# --- 1. 模式选择 (还原桌面版功能) ---
+# --- 1. 模式选择 ---
 mode = st.radio(
     "请选择模式：",
     ("🟢 陪我聊聊", "🔵 帮我查查"),
@@ -75,77 +57,78 @@ if 'chat_history' not in st.session_state:
 audio_value = st.audio_input("点此开始录音", label_visibility="collapsed")
 
 if audio_value:
-    # 简单检查文件大小
     if len(audio_value.getvalue()) < 1000:
         st.warning("⏳ 录音太短啦，请多说几句~")
     else:
-        st.info("知音正在听...")
+        st.info("正在识别...")
         
         try:
-            # A. 保存临时文件
-            temp_filename = "temp_audio.wav"
-            with open(temp_filename, "wb") as f:
-                f.write(audio_value.getvalue())
+            # 🔥 核心修改：直接读取二进制数据流
+            # 不存文件，直接把数据喂给 Recognition 接口
+            # 使用 paraformer-realtime-v1 模型（这个通常有大量免费额度）
+            audio_bytes = audio_value.getvalue()
             
-            # B. 第一步：用【Qwen-Audio-Turbo】来“听” (ASR)
-            # 这个模型能直接理解音频文件，不需要转码，非常稳
-            asr_messages = [{
-                "role": "user",
-                "content": [
-                    {"audio": f"file://{os.path.abspath(temp_filename)}"},
-                    {"text": "请将这段语音转写为文字，不要包含任何标点符号之外的解释。"}
-                ]
-            }]
-            
-            asr_response = MultiModalConversation.call(
-                api_key=API_KEY,
-                model='qwen-audio-turbo',
-                messages=asr_messages
+            recognition = Recognition(
+                model='paraformer-realtime-v1',
+                format='wav',
+                sample_rate=16000,
+                callback=None
             )
             
-            # 检查“耳朵”是否好使
-            if asr_response.status_code == 200:
-                user_text = asr_response.output.choices[0].message.content[0]['text']
+            # 直接调用 call 方法传入音频数据
+            response = recognition.call(
+                audio_bytes,
+                language_hints=['zh']
+            )
+            
+            # 检查结果
+            if response.status_code == 200:
+                user_text = ""
+                # 兼容不同的返回格式
+                if 'sentences' in response.output:
+                    user_text = "".join([s['text'] for s in response.output['sentences']])
+                elif 'text' in response.output:
+                    user_text = response.output['text']
                 
-                if user_text and len(user_text) > 1:
+                if user_text:
                     st.success("听清啦！")
                     
-                    # C. 第二步：用【Qwen-Turbo】来“想” (LLM)
-                    # 根据模式设定不同的人设
+                    # --- 思考逻辑 ---
                     if "聊聊" in mode:
                         system_prompt = "你是一个温暖的老年人陪伴助手“知音”。请用亲切、尊重的口吻，像晚辈一样陪老人聊天。回复要简短暖心，多给予情感支持。"
                     else:
                         system_prompt = "你是一个生活助手。请忽略老人的口语废话，直接提取核心需求，给出最简单、直接的办事建议或信息。不要长篇大论。"
                     
-                    chat_messages = [
+                    messages = [
                         {'role': 'system', 'content': system_prompt},
                         {'role': 'user', 'content': user_text}
                     ]
                     
+                    # 调用 LLM (qwen-turbo 也很便宜)
                     llm_resp = Generation.call(
                         api_key=API_KEY, 
                         model="qwen-turbo", 
-                        messages=chat_messages, 
+                        messages=messages, 
                         result_format='message'
                     )
                     
                     if llm_resp.status_code == 200:
                         reply = llm_resp.output.choices[0].message.content
-                        # 存入历史并刷新
                         st.session_state.chat_history.insert(0, {"role": "bot", "content": reply})
                         st.session_state.chat_history.insert(0, {"role": "user", "content": user_text})
                         st.rerun()
                     else:
-                        st.error(f"大脑思考时卡住了: {llm_resp.message}")
+                        st.error(f"大脑思考失败: {llm_resp.message}")
                 else:
-                    st.warning("😓 好像没听到声音，请大声一点~")
+                    st.warning("👂 好像没听到声音，请大声一点~")
             else:
-                st.error(f"耳朵听不见了: {asr_response.message}")
+                # 如果还报错，直接把错误显示出来
+                st.error(f"识别服务报错: {response.code} - {response.message}")
                 
         except Exception as e:
             st.error(f"内部错误: {str(e)}")
 
-# --- 3. 历史记录显示 ---
+# --- 3. 历史记录 ---
 st.markdown("---")
 for chat in st.session_state.chat_history:
     if chat["role"] == "user":
