@@ -1,29 +1,27 @@
 import streamlit as st
 import dashscope
-from dashscope.audio.asr import Transcription  # 使用文件转写接口(更稳)
+from dashscope.audio.asr import Recognition  # 👈 换回了更快的短语音接口
 from dashscope import Generation
 import os
-import json
-import time
 
 # =================配置区=================
+# 优先读取 Streamlit Secrets，如果没有配置，则读取下面的字符串
 if "DASHSCOPE_API_KEY" in st.secrets:
     API_KEY = st.secrets["DASHSCOPE_API_KEY"]
 else:
-    # 👇 请确保这里填入了您的真实Key
+    # ⚠️⚠️⚠️ 请务必在这里填入您的真实 API Key，保留双引号 ⚠️⚠️⚠️
     API_KEY = "sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" 
 
 dashscope.api_key = API_KEY
 # =======================================
 
-st.set_page_config(page_title="银龄知音·手机版", page_icon="📱", layout="centered")
+st.set_page_config(page_title="银龄知音", page_icon="👴", layout="centered")
 
 # CSS 样式优化
 st.markdown("""
     <style>
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    .stDeployButton {display:none;}
     header {visibility: hidden;}
     
     .stButton>button {
@@ -33,8 +31,8 @@ st.markdown("""
         border-radius: 25px; 
         background-color: #FF5733; 
         color: white;
-        box-shadow: 0px 4px 6px rgba(0,0,0,0.1);
         border: none;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
     .chat-bubble {
@@ -45,7 +43,6 @@ st.markdown("""
         box-shadow: 0px 2px 5px rgba(0,0,0,0.05);
         font-size: 18px;
     }
-    
     .stApp { background-color: #F7F7F7; }
     </style>
 """, unsafe_allow_html=True)
@@ -56,44 +53,38 @@ st.write("请按下方红色按钮说话，说完点击停止")
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
-# --- 核心功能区 ---
 audio_value = st.audio_input("点此开始录音")
 
 if audio_value:
-    st.info("正在处理录音，请稍候...")
+    st.info("正在听...")
     
     try:
-        # 1. 保存临时文件
+        # 1. 保存录音文件
         with open("temp_audio.wav", "wb") as f:
             f.write(audio_value.getvalue())
         
-        # 2. 获取绝对路径 (修复了之前的 json.os 报错)
-        abs_path = os.path.abspath("temp_audio.wav")
-        file_url = f"file://{abs_path}"
-        
-        # 3. 调用文件转写服务 (异步提交)
-        # 这个接口兼容性最好，能自动处理文件上传
-        task_response = Transcription.async_call(
-            model='paraformer-v1',
-            file_urls=[file_url],
+        # 2. 调用阿里云识别（短语音模式，速度快）
+        # 使用 Recognition.call 直接发送文件
+        rec_response = Recognition.call(
+            model='paraformer-realtime-v1',
+            file='temp_audio.wav',
+            format='wav',
             language_hints=['zh']
         )
         
-        # 4. 等待结果
-        transcribe_response = Transcription.wait(task=task_response.task_id, api_key=API_KEY)
-        
-        if transcribe_response.status_code == 200:
-            # 提取文字
+        # 3. 检查识别结果
+        if rec_response.status_code == 200:
             user_text = ""
-            if 'results' in transcribe_response.output and transcribe_response.output['results']:
-                for sent in transcribe_response.output['results'][0]['sentences']:
-                    user_text += sent['text']
+            # 提取文字内容
+            if 'sentences' in rec_response.output:
+                user_text = "".join([s['text'] for s in rec_response.output['sentences']])
+            else:
+                user_text = rec_response.output.get('text', '')
             
             if user_text:
-                st.success("听清楚啦！")
-                st.session_state.last_user_text = user_text
+                st.success("听清啦！")
                 
-                # 5. 调用大模型
+                # 4. 调用大模型
                 system_prompt = "你是一个温暖的老年人陪伴助手，请简短、亲切地回复。"
                 if any(k in user_text for k in ["查", "问", "怎么", "哪里", "医生", "药"]):
                     system_prompt = "你是一个生活助手，请直接给出简单的办事建议。"
@@ -112,22 +103,23 @@ if audio_value:
                 
                 if llm_resp.status_code == 200:
                     reply = llm_resp.output.choices[0].message.content
-                    
-                    # 存入历史并刷新
+                    # 存入历史并强制刷新
                     st.session_state.chat_history.insert(0, {"role": "bot", "content": reply})
                     st.session_state.chat_history.insert(0, {"role": "user", "content": user_text})
                     st.rerun()
                 else:
-                    st.error("知音正在思考，请稍后再试")
+                    # 如果大模型报错，打印具体原因
+                    st.error(f"大脑思考失败: {llm_resp.code} - {llm_resp.message}")
             else:
                 st.warning("好像没听到声音，请大声一点~")
         else:
-            st.error(f"语音识别服务繁忙: {transcribe_response.message}")
+            # ⚠️ 这里是关键：如果识别失败，打印出阿里云返回的真实错误信息
+            st.error(f"耳朵出问题了: {rec_response.code} - {rec_response.message}")
             
     except Exception as e:
-        st.error(f"发生错误: {e}")
+        st.error(f"程序内部错误: {e}")
 
-# --- 展示对话流 ---
+# 显示历史对话
 st.markdown("---")
 for chat in st.session_state.chat_history:
     if chat["role"] == "user":
