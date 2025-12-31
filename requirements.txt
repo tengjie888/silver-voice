@@ -1,2 +1,2 @@
 streamlit
-dashscope
+dashscope>=1.20.0
